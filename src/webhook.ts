@@ -1,11 +1,13 @@
 import { Router, type Request, type Response } from "express";
 import { generateReply } from "./ai/reply";
+import { catalogSendFailedMessage, wantsPriceList } from "./catalog";
 import { config } from "./config";
 import {
   getRecentMessages,
   isNewUser,
   saveMessage,
 } from "./db";
+import { sendCatalogAsNativePdf } from "./meta/catalogAttachment";
 import { sendInstagramMessage } from "./meta/sendMessage";
 import { verifyMetaSignature } from "./meta/verifySignature";
 import { WELCOME_MESSAGE } from "./templates/welcome";
@@ -50,6 +52,23 @@ function rememberMessageId(mid: string | undefined): boolean {
   return false;
 }
 
+async function sendCatalogPdf(senderId: string): Promise<void> {
+  // Native Instagram PDF file bubble only (no https link). AI text follows separately.
+  try {
+    const attachmentId = await sendCatalogAsNativePdf(senderId);
+    saveMessage(
+      senderId,
+      "assistant",
+      `[Sent native catalog PDF attachment_id=${attachmentId}]`
+    );
+  } catch (error) {
+    console.error("Native catalog PDF send failed:", error);
+    const fallback = catalogSendFailedMessage();
+    await sendInstagramMessage(senderId, fallback);
+    saveMessage(senderId, "assistant", fallback);
+  }
+}
+
 async function handleIncomingMessage(
   senderId: string,
   text: string
@@ -61,10 +80,16 @@ async function handleIncomingMessage(
     saveMessage(senderId, "assistant", WELCOME_MESSAGE);
   }
 
+  saveMessage(senderId, "user", text);
+
+  // Full catalog/PDF request: send native PDF, then answer with catalog-aware AI.
+  if (wantsPriceList(text)) {
+    await sendCatalogPdf(senderId);
+  }
+
   const history = getRecentMessages(senderId, 20);
   const reply = await generateReply(history, text);
 
-  saveMessage(senderId, "user", text);
   await sendInstagramMessage(senderId, reply);
   saveMessage(senderId, "assistant", reply);
 }
